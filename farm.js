@@ -1,0 +1,219 @@
+// farm.js
+const fs = require("fs");
+const path = require("path");
+
+/* ========= CONFIG ========= */
+const CHANNEL_ID = "1439626703390507160";
+const INTERVAL = 19000;
+const OWO_PREFIXES = ["owo", "o"];
+
+const ACTIONS = {
+  hunt: ["hunt", "h"],
+  battle: ["battle", "b"]
+};
+const OREP_TARGET_ID = "408785106942164992";
+
+const TEXT_FILES = [
+  "text1.txt",
+  "text2.txt",
+  "text3.txt",
+  "text4.txt",
+  "text5.txt"
+];
+/* ========================== */
+
+/* ---------- TIME VN ---------- */
+function getVNDate() {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" })
+  );
+}
+function getVNDateString() {
+  const d = getVNDate();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+function nowTime() {
+  return getVNDate().toLocaleTimeString("vi-VN", { hour12: false });
+}
+function isSleepTimeVN() {
+  const h = getVNDate().getHours();
+  return h >= 21 || h < 6;
+}
+
+/* ---------- RANDOM ---------- */
+const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+function buildOwoCommand(lastAction) {
+  const prefix = OWO_PREFIXES[rand(0, OWO_PREFIXES.length - 1)];
+
+  let type;
+
+  // chống lặp action
+  if (lastAction === "hunt") {
+    type = "battle";
+  } else if (lastAction === "battle") {
+    type = "hunt";
+  } else {
+    type = Math.random() < 0.5 ? "hunt" : "battle";
+  }
+
+  const actionList = ACTIONS[type];
+  const action = actionList[rand(0, actionList.length - 1)];
+
+  return {
+    msg: `${prefix} ${action}`,
+    action: type
+  };
+}
+async function smartTyping(ch, text = "") {
+  // 10% không typing cho tự nhiên
+  if (Math.random() < 0.1) return;
+
+  const len = text.length;
+
+  let min = 500;
+  let max = 1200;
+
+  if (len > 80) {
+    min = 2000;
+    max = 3500;
+  } else if (len > 40) {
+    min = 1400;
+    max = 2500;
+  } else if (len > 15) {
+    min = 900;
+    max = 1600;
+  }
+
+  await ch.sendTyping();
+  await new Promise(r => setTimeout(r, rand(min, max)));
+}
+
+/* ---------- LOAD TEXT ---------- */
+function loadAllSentences() {
+  let sentences = [];
+  for (const file of TEXT_FILES) {
+    const filePath = path.join(__dirname, file);
+    if (!fs.existsSync(filePath)) continue;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const matches = raw.match(/"([^"]+)"/g) || [];
+    for (const m of matches) {
+      const clean = m.replace(/"/g, "").trim();
+      if (clean) sentences.push(clean);
+    }
+  }
+  return sentences;
+}
+
+/* ---------- SLEEP ---------- */
+async function sleepWithPause(ms, getPaused) {
+  const step = 500;
+  let waited = 0;
+  while (waited < ms) {
+    if (getPaused()) return false;
+    await new Promise(r => setTimeout(r, step));
+    waited += step;
+  }
+  return true;
+}
+
+/* ---------- START FARM ---------- */
+function startFarm(client, getPaused, setPaused, sendWebhook) {
+  let activeFrom = Date.now();
+  let restUntil = 0;
+  let lastAction = null; // "hunt" | "battle"
+
+  let dailyFlags = {
+    odaily: null,
+    orep: null
+  };
+
+  const allSentences = loadAllSentences();
+  let sentenceIndex = 0;
+
+  function resting() {
+    const now = Date.now();
+    if (now < restUntil) return true;
+
+    const mins = (now - activeFrom) / 60000;
+    if (mins >= rand(25, 30)) {
+      const rest = Math.random() < 0.2 ? 10 : rand(5, 7);
+      restUntil = now + rest * 60000;
+      activeFrom = restUntil;
+      return true;
+    }
+    return false;
+  }
+
+  setInterval(async () => {
+    try {
+      if (getPaused() || resting()) return;
+
+      const now = getVNDate();
+      const h = now.getHours();
+      const m = now.getMinutes();
+      const today = getVNDateString();
+
+      const ch = await client.channels.fetch(CHANNEL_ID);
+
+      /* ===== DAILY ===== */
+      if (h === 15 && m < 30 && dailyFlags.odaily !== today) {
+        await smartTyping(ch, "odaily");
+await ch.send("odaily");
+        dailyFlags.odaily = today;
+        return;
+      }
+
+      if (h === 15 && m >= 30 && dailyFlags.orep !== today) {
+        const repText = `orep <@${OREP_TARGET_ID}>`;
+await smartTyping(ch, repText);
+await ch.send(repText);
+        dailyFlags.orep = today;
+        return;
+      }
+
+      const sendTimes = rand(1, 3);
+
+      for (let i = 0; i < sendTimes; i++) {
+        if (getPaused()) break;
+
+        while (isSleepTimeVN()) {
+          const ok = await sleepWithPause(60000, getPaused);
+          if (!ok) return;
+        }
+
+        const result = buildOwoCommand(lastAction);
+const msg = result.msg;
+
+await smartTyping(ch, msg);
+await ch.send(msg);
+
+lastAction = result.action;
+
+        console.log(`${nowTime()} ${msg} ${client.user.username}`);
+
+        if (allSentences.length) {
+          const textTimes = rand(1, 3);
+          for (let t = 0; t < textTimes; t++) {
+            if (getPaused()) break;
+            const sentence = allSentences[sentenceIndex];
+await smartTyping(ch, sentence);
+await ch.send(sentence);
+            sentenceIndex = (sentenceIndex + 1) % allSentences.length;
+            const ok = await sleepWithPause(rand(2000, 4000), getPaused);
+            if (!ok) break;
+          }
+        }
+
+        if (i < sendTimes - 1) {
+          const ok = await sleepWithPause(6000, getPaused);
+          if (!ok) break;
+        }
+      }
+    } catch {
+      setPaused(true);
+      sendWebhook("pause error", client.user.id);
+    }
+  }, INTERVAL);
+}
+
+module.exports = startFarm;
